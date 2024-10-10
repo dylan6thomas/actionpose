@@ -14,6 +14,9 @@ from ...models import build_body_model
 from ...utils import data_utils as d_utils
 from ...utils.kp_utils import root_centering
 
+import json
+from transformers import BertTokenizer
+
 
 
 def compute_contact_label(feet, thr=1e-2, alpha=5):
@@ -32,6 +35,9 @@ class BABELDataset(BaseDataset):
     def __init__(self, cfg):
         label_pth = _C.PATHS.BABEL_LABEL
         super(BABELDataset, self).__init__(cfg, training=True)
+
+        babel_pth = "/jumbo/jinlab/dylan/data/babel/babel_v1.0_release/train.json"
+        self.babel_json = json.load(open(babel_pth))
 
         self.supervise_pose = cfg.TRAIN.STAGE == 'stage1' or cfg.TRAIN.STAGE == 'stage1-5'
         self.supervise_confidence = cfg.TRAIN.STAGE == 'stage1-5'
@@ -146,6 +152,45 @@ class BABELDataset(BaseDataset):
         
         return target
     
+    def get_language_labels(self, target, babel_json):
+        tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+        num_frames = target["babel_sids"].shape[0]
+        id = str(target["babel_sids"][0].item())
+
+        seq = babel_json[id]
+        
+        
+        target_fps = 30
+        language_labels = []
+        time = 0
+        time_step = 1/target_fps
+        steps = 0
+
+        frame_ann = seq["frame_ann"]
+
+        while(steps < num_frames):
+            steps += 1
+            if frame_ann:
+                for act in seq["frame_ann"]["labels"]:
+                    if act["start_t"] <= time_step and time_step < act["end_t"]:
+                        language_labels.append(act["proc_label"])
+                        break
+            else:
+                full_label = []
+                for label in seq["seq_ann"]["labels"]:
+                    full_label.append(label["proc_label"])
+                language_labels.append(" and ".join(full_label))
+
+            time += time_step
+
+        tokenized_lang_label = tokenizer(language_labels, 
+                                 add_special_tokens=True, 
+                                 padding=True, 
+                                 return_tensors="pt")
+        target["lang_ann_tokens"] = tokenized_lang_label["input_ids"]
+        return target
+    
     def load_amass(self, index, target):
         start_index, end_index = self.video_indices[index]
         
@@ -154,14 +199,14 @@ class BABELDataset(BaseDataset):
         pose = transforms.axis_angle_to_matrix(pose.reshape(-1, 24, 3))
         transl = torch.from_numpy(self.labels['transl'][start_index:end_index+1].copy())
         betas = torch.from_numpy(self.labels['betas'][start_index:end_index+1].copy())
-        annotation = torch.from_numpy(self.labels['language'][start_index:end_index+1].copy())
+        babel_sids = torch.from_numpy(self.labels["babel_sid"][start_index:end_index+1].copy())
         
         # Stack GT
         target.update({'vid': self.labels['vid'][start_index], 
                   'pose': pose, 
                   'transl': transl, 
                   'betas': betas,
-                  'annotation': annotation})
+                  'babel_sids': babel_sids})
 
         return target
 
@@ -177,6 +222,8 @@ class BABELDataset(BaseDataset):
         target = self.augment_data(target)
         target = self.get_groundtruth(target)
         target = self.get_input(target)
+        target = self.get_language_labels(target,self.babel_json)
+
         
         target = d_utils.prepare_keypoints_data(target)
         target = d_utils.prepare_smpl_data(target)

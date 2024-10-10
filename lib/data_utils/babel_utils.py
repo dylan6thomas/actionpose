@@ -38,12 +38,15 @@ def process_babel():
     total_files = len(babel_json.values())
     read_files = 1
 
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    max_tokens = 0
+    # tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    # max_tokens = 0
 
-    for seq in babel_json.values():
+    for seq in (seq_bar := tqdm(babel_json.values(),leave=True)):
+        # if read_files < 6600:
+        #     read_files+=1
+        #     continue
 
-        print("READING FILE {0} out of {1}".format(read_files, total_files))
+        # print("READING FILE {0} out of {1}".format(read_files, total_files))
         # Properly format Babel directories to match AMASS download
         path_dirs = seq["feat_p"].split("/")
         path_dirs.pop(1)
@@ -59,9 +62,10 @@ def process_babel():
         amass_act_path = amass_act_path.replace("SSMsynced", "SSM")
         amass_act_path = amass_act_path.replace("Transitionsmocap", "Transitions")
 
-        print("PATH: ", amass_act_path)
+        # print("PATH: ", amass_act_path)
 
         path_dirs = amass_act_path.split("/")
+        seq_name = path_dirs[-3]
         subj = path_dirs[-2]
         act = path_dirs[-1]
 
@@ -73,6 +77,7 @@ def process_babel():
         fname = os.path.join(amass_root, amass_act_path)
         if fname.endswith('shape.npz') or fname.endswith('stagei.npz'): 
             # Skip shape and stagei files
+            read_files+=1
             continue
         data = dict(np.load(fname, allow_pickle=True))
         
@@ -83,7 +88,9 @@ def process_babel():
         num_frames = len(data['poses'][::retain_freq])
         
         # Skip if the sequence is too short
-        if num_frames < 25: continue
+        if num_frames < 25: 
+            read_files += 1
+            continue
         
         # Get SMPL groundtruth from MoSh fitting
         pose = map_dmpl_to_smpl(torch.from_numpy(data['poses'][::retain_freq]).float())
@@ -91,14 +98,14 @@ def process_babel():
         betas = torch.from_numpy(
             np.repeat(data['betas'][:10][np.newaxis], pose.shape[0], axis=0)).float()
         
-        language_label = get_language_labels(seq, target_fps, num_frames)
-        tokenized_lang_label = [tokenizer.encode(label, add_special_tokens=True, ) for label in language_label]
-        max_tokens = max(max_tokens, max([len(toks) for toks in tokenized_lang_label]))
+        # language_label = get_language_labels(seq, target_fps, num_frames)
+        # tokenized_lang_label = [tokenizer.encode(label, add_special_tokens=True, ) for label in language_label]
+        # max_tokens = max(max_tokens, max([len(toks) for toks in tokenized_lang_label]))
 
-        if language_label == None:
-            continue
+        # if language_label == None:
+        #     continue
 
-        assert transl.shape[0] == len(language_label)
+        # assert transl.shape[0] == len(language_label)
         
         # Convert Z-up coordinate to Y-down
         pose, transl = transform_global_coordinate(pose, zup2ydown, transl)
@@ -126,46 +133,48 @@ def process_babel():
         processed_data['pose'].append(pose.numpy())
         processed_data['betas'].append(betas.numpy())
         processed_data['transl'].append(transl.numpy())
-        processed_data['vid'].append(np.array([f'{seq}_{subj}_{act}'] * pose.shape[0]))
-        processed_data["language"].append(np.array(tokenized_lang_label))
+        processed_data['vid'].append(np.array([f'{seq_name}_{subj}_{act}'] * pose.shape[0]))
+        # print("BABEL SID: ", seq["babel_sid"])
+        processed_data['babel_sid'].append(np.array([int(seq["babel_sid"])] * pose.shape[0]))
+        # processed_data["language"].append(np.array(tokenized_lang_label))
         read_files += 1
 
     # Add padding to tokens
-    print(max_tokens)
-    for i, seq_tok in enumerate(processed_data["language"]):
-        processed_data["language"][i] = np.pad(seq_tok, (0, max_tokens - seq_tok.shape[1]), 'constant', constant_values=0)
+    # print(max_tokens)
+    # for i, seq_tok in enumerate(processed_data["language"]):
+    #     processed_data["language"][i] = np.pad(seq_tok, (0, max_tokens - seq_tok.shape[1]), 'constant', constant_values=0)
 
     for key, val in processed_data.items():
-        print("CONCATENATING: ", key)
+        # print("CONCATENATING: ", key)
         processed_data[key] = np.concatenate(val)
 
     joblib.dump(processed_data, _C.PATHS.BABEL_LABEL)
     print('\nDone!')
 
-def get_language_labels(seq, target_fps, num_frames):
-    languege_labels = []
-    time = 0
-    time_step = 1/target_fps
-    seq_dur = seq["dur"]
-    steps = 0
+# def get_language_labels(seq, target_fps, num_frames):
+#     languege_labels = []
+#     time = 0
+#     time_step = 1/target_fps
+#     seq_dur = seq["dur"]
+#     steps = 0
 
-    frame_ann = seq["frame_ann"]
+#     frame_ann = seq["frame_ann"]
 
-    while(steps < num_frames):
-        steps += 1
-        if frame_ann:
-            for act in seq["frame_ann"]["labels"]:
-                if act["start_t"] <= time_step and time_step < act["end_t"]:
-                    languege_labels.append(act["proc_label"])
-                    break
-        else:
-            full_label = []
-            for label in seq["seq_ann"]["labels"]:
-                full_label.append(label["proc_label"])
-            languege_labels.append(" and ".join(full_label))
+#     while(steps < num_frames):
+#         steps += 1
+#         if frame_ann:
+#             for act in seq["frame_ann"]["labels"]:
+#                 if act["start_t"] <= time_step and time_step < act["end_t"]:
+#                     languege_labels.append(act["proc_label"])
+#                     break
+#         else:
+#             full_label = []
+#             for label in seq["seq_ann"]["labels"]:
+#                 full_label.append(label["proc_label"])
+#             languege_labels.append(" and ".join(full_label))
 
-        time += time_step
-    return languege_labels
+#         time += time_step
+#     return languege_labels
 
 if __name__ == '__main__':
     out_path = '/'.join(_C.PATHS.BABEL_LABEL.split('/')[:-1])
